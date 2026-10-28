@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import os
@@ -2126,7 +2126,13 @@ def test_full_run_logs_saved_question_updates_before_command_finishes(
     )
 
     result = subprocess.run(
-        arguments, cwd=root, env=env, capture_output=True, text=True, check=False, timeout=SUBPROCESS_TIMEOUT_SECONDS
+        arguments,
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 44, result.stdout + result.stderr
