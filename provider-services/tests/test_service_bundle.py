@@ -1,0 +1,217 @@
+from __future__ import annotations
+
+import hashlib
+import re
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = ROOT.parent
+
+
+def benchmark_embedding_model() -> str:
+    content = (REPOSITORY_ROOT / "configs" / "benchmark.yml").read_text(encoding="utf-8")
+    marker = "  embedding:\n    model: "
+    if content.count(marker) != 1:
+        raise AssertionError("canonical benchmark embedding model is not unique")
+    return content.split(marker, 1)[1].splitlines()[0]
+
+
+class ServiceBundleContractTests(unittest.TestCase):
+    def read(self, relative_path: str) -> str:
+        path = ROOT / relative_path
+        self.assertTrue(path.is_file(), f"missing required file: {relative_path}")
+        return path.read_text(encoding="utf-8")
+
+    def read_root_env_example(self) -> str:
+        path = REPOSITORY_ROOT / ".env.example"
+        self.assertTrue(path.is_file(), "missing required root .env.example")
+        return path.read_text(encoding="utf-8")
+
+    def test_release_and_image_pins_are_immutable(self) -> None:
+        versions = self.read("versions.env")
+        expected = {
+            "HINDSIGHT_VERSION": "0.9.2",
+            "HINDSIGHT_COMMIT": "ebad478240d3171bb88201ececda5e8d9883d22d",
+            "HINDSIGHT_IMAGE_DIGEST": "sha256:7635a15739361dbdf221ba796ad25a813f876144fe113022eea8e26cb6ee75e7",
+            "MEM0_VERSION": "2.0.19",
+            "MEM0_COMMIT": "dc82354e143c2581d505d581a00286d6ef8c3605",
+            "OPENVIKING_VERSION": "0.4.19",
+            "OPENVIKING_COMMIT": "f3afef11637f2d7c11e4b1f36ed2f90630737cdc",
+            "OPENVIKING_IMAGE_DIGEST": "sha256:49e20c09ec7ea2f16c116d9ddb2ea90b4c24bf3f5a83078609e52399487dbec1",
+        }
+        parsed = dict(
+            line.split("=", 1)
+            for line in versions.splitlines()
+            if line and not line.startswith("#")
+        )
+        for key, value in expected.items():
+            self.assertEqual(parsed.get(key), value, key)
+        self.assertNotIn("MEM0_SERVER_OVERLAY_SHA256", parsed)
+        self.assertNotIn("MEM0_QDRANT_VERSION", parsed)
+        self.assertNotIn("MEM0_QDRANT_IMAGE_DIGEST", parsed)
+        self.assertEqual(
+            hashlib.sha256((ROOT / "retry-guard" / "sitecustomize.py").read_bytes()).hexdigest(),
+            parsed["RETRY_GUARD_SHA256"],
+        )
+
+    def test_compose_has_five_long_running_services_and_read_only_storage_probe(self) -> None:
+        compose = self.read("compose.yaml")
+        for service in (
+            "hindsight",
+            "mem0-postgres",
+            "mem0",
+            "mem0-inspector",
+            "openviking",
+        ):
+            self.assertRegex(compose, rf"(?m)^  {re.escape(service)}:$")
+        self.assertNotRegex(compose, r"(?m)^  mem0-qdrant:$")
+        self.assertNotRegex(compose, r"(?m)^  mem0_qdrant:$")
+        self.assertNotIn("QDRANT", compose)
+        self.assertEqual(compose.count("    healthcheck:\n"), 5)
+        self.assertRegex(compose, r"(?m)^  openviking-storage-probe:$")
+        probe = compose.split("  openviking-storage-probe:\n", 1)[1].split("\nvolumes:\n", 1)[0]
+        self.assertIn('profiles: ["verification"]', probe)
+        self.assertIn("network_mode: none", probe)
+        self.assertIn("read_only: true", probe)
+        self.assertIn("target: /probe/workspace", probe)
+        self.assertIn("read_only: true", probe)
+        self.assertIn('cap_drop: ["ALL"]', probe)
+        self.assertIn('security_opt: ["no-new-privileges:true"]', probe)
+        self.assertNotRegex(probe, r"(?i)(api_key|credential|secret)")
+        self.assertNotRegex(compose, r"(?m)^\s*image:\s*\S*:latest(?:\s|$)")
+        self.assertIn('HINDSIGHT_API_SKIP_LLM_VERIFICATION: "true"', compose)
+        self.assertRegex(compose, r"(?m)^    shm_size: 1gb$")
+        self.assertNotIn('"5432:', compose)
+        self.assertNotIn('"6333:', compose)
+        for port in ("18888", "18889", "16333", "19330"):
+            self.assertIn("127.0.0.1:${OAMB_", compose)
+            self.assertIn(port, compose)
+
+    def test_inspector_uses_private_postgres_without_runner_credentials(self) -> None:
+        compose = self.read("compose.yaml")
+        env_example = self.read_root_env_example()
+        self.assertIn("OAMB_MEM0_INSPECTOR_API_KEY", compose)
+        self.assertIn("POSTGRES_HOST: mem0-postgres", compose)
+        self.assertIn("POSTGRES_DB: postgres", compose)
+        self.assertIn("POSTGRES_USER: oamb_mem0", compose)
+        self.assertNotIn("QDRANT", compose)
+        self.assertNotIn("QDRANT", env_example)
+        self.assertNotIn("OAMB_RUNNER_POSTGRES", compose)
+
+    def test_mem0_image_is_fixed_source_and_not_dev_reinstall(self) -> None:
+        dockerfile = self.read("mem0/Dockerfile")
+        self.assertIn(
+            "python:3.12.11-slim-bookworm@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7",
+            dockerfile,
+        )
+        self.assertIn("org.opencontainers.image.revision", dockerfile)
+        self.assertIn("dc82354e143c2581d505d581a00286d6ef8c3605", dockerfile)
+        self.assertNotIn("--force-reinstall", dockerfile)
+        self.assertNotIn("--reload", dockerfile)
+        self.assertNotRegex(dockerfile, r"(?m)^CMD .*pip install")
+        self.assertNotIn("server_state.py", dockerfile)
+        self.assertNotIn("server-overlay-sha256", dockerfile)
+        self.assertIn("io.oamb.mem0.build-input-sha256", dockerfile)
+
+    def test_mem0_uses_official_pgvector_config_without_overlay(self) -> None:
+        bootstrap = self.read("mem0/bootstrap.sh")
+        dockerignore = self.read(".dockerignore")
+        operator = self.read("bin/provider-services")
+        self.assertIn('vector_store: {provider: "pgvector"', bootstrap)
+        self.assertIn('host: "mem0-postgres"', bootstrap)
+        self.assertIn('dbname: "postgres"', bootstrap)
+        self.assertIn('collection_name: "oamb_memories"', bootstrap)
+        self.assertIn("embedding_model_dims: 1024", bootstrap)
+        self.assertIn("hnsw: true", bootstrap)
+        self.assertIn("diskann: false", bootstrap)
+        self.assertNotIn("server_state.py", dockerignore)
+        self.assertNotIn("MEM0_SERVER_OVERLAY_SHA256", operator)
+        self.assertNotIn("MEM0_QDRANT_IMAGE_DIGEST", operator)
+
+    def test_openviking_isolated_api_configuration(self) -> None:
+        compose = self.read("compose.yaml")
+        config = self.read("openviking/ov.conf")
+        self.assertIn('OPENVIKING_WITH_BOT: "0"', compose)
+        self.assertIn('"workspace": "/var/lib/openviking"', config)
+        self.assertIn('"provider": "openai"', config)
+        self.assertIn('"model": "${OAMB_EMBEDDING_MODEL}"', config)
+        self.assertIn('"version": "v3"', config)
+        self.assertIn('"extraction_output_format": "python"', config)
+        self.assertNotIn('"rerank"', config)
+        self.assertNotIn("~/.openviking", compose)
+
+    def test_provider_internal_thinking_effort_comes_from_plan_environment(self) -> None:
+        compose = self.read("compose.yaml")
+        mem0_bootstrap = self.read("mem0/bootstrap.sh")
+        openviking_config = self.read("openviking/ov.conf")
+        operator = self.read("bin/provider-services")
+        plan_environment = self.read("lib/plan_environment.sh")
+
+        self.assertIn(
+            "HINDSIGHT_API_LLM_REASONING_EFFORT: ${OAMB_HINDSIGHT_LLM_REASONING_EFFORT:?required}",
+            compose,
+        )
+        self.assertIn("OAMB_MEM0_LLM_REASONING_EFFORT", mem0_bootstrap)
+        self.assertIn("reasoning_effort: $llm_effort", mem0_bootstrap)
+        self.assertIn("is_reasoning_model: true", mem0_bootstrap)
+        self.assertIn(
+            '"extra_request_body": {"reasoning_effort": "${OAMB_OPENVIKING_VLM_REASONING_EFFORT}"}',
+            openviking_config,
+        )
+        for variable in (
+            "OAMB_HINDSIGHT_LLM_REASONING_EFFORT",
+            "OAMB_MEM0_LLM_REASONING_EFFORT",
+            "OAMB_OPENVIKING_VLM_REASONING_EFFORT",
+        ):
+            self.assertIn(variable, plan_environment)
+        self.assertIn("reasoning_effort: $effort", operator)
+        self.assertIn("hindsight-model-config.json", operator)
+        self.assertIn("openviking-model-config.json", operator)
+        self.assertNotIn("TARGET_PROVIDER_MODEL", operator)
+        self.assertEqual(operator.count(".model == $target_model"), 3)
+        self.assertEqual(operator.count("$target_effort"), 3)
+        self.assertIn(".llm.config.model == $target_model", operator)
+
+    def test_all_provider_extraction_retries_share_one_required_input_and_are_proven(self) -> None:
+        compose = self.read("compose.yaml")
+        openviking_config = self.read("openviking/ov.conf")
+        retry_guard = self.read("retry-guard/sitecustomize.py")
+        operator = self.read("bin/provider-services")
+        plan_environment = self.read("lib/plan_environment.sh")
+        precheck = (REPOSITORY_ROOT / "precheck.sh").read_text(encoding="utf-8")
+
+        self.assertEqual(compose.count("OAMB_EXTRACTION_MAX_RETRIES: ${OAMB_EXTRACTION_MAX_RETRIES:?required}"), 3)
+        self.assertIn('HINDSIGHT_API_LLM_MAX_RETRIES: "0"', compose)
+        self.assertIn(
+            "HINDSIGHT_API_RETAIN_LLM_MAX_RETRIES: ${OAMB_EXTRACTION_MAX_RETRIES:?required}",
+            compose,
+        )
+        self.assertIn('HINDSIGHT_API_WORKER_MAX_RETRIES: "0"', compose)
+        self.assertEqual(compose.count("./retry-guard/sitecustomize.py:"), 3)
+        self.assertEqual(openviking_config.count('"max_retries": 0'), 2)
+        self.assertIn('kwargs["max_retries"] = INTERNAL_RETRY_COUNT', retry_guard)
+        self.assertIn('os.environ["OAMB_EXTRACTION_MAX_RETRIES"]', retry_guard)
+        self.assertIn("module._MEMORY_EXTRACTION_MAX_RETRIES = EXTRACTION_MAX_RETRIES", retry_guard)
+        self.assertIn(".execution.extraction_max_retries", plan_environment)
+        self.assertNotIn('OAMB_EXTRACTION_MAX_RETRIES="$(jq', precheck)
+        self.assertIn('"extraction_max_retries":', operator)
+        self.assertIn('.extraction_max_retries == 10', operator)
+        for filename in (
+            "hindsight-retry-config.json",
+            "mem0-retry-config.json",
+            "openviking-retry-config.json",
+        ):
+            self.assertIn(filename, operator)
+
+    def test_producer_containers_freeze_derived_no_proxy_without_global_proxy_changes(self) -> None:
+        compose = self.read("compose.yaml")
+        compose_driver = self.read("lib/compose.sh")
+        self.assertEqual(compose.count("NO_PROXY: ${OAMB_LLM_NO_PROXY:?required}"), 3)
+        self.assertEqual(compose.count("no_proxy: ${OAMB_LLM_NO_PROXY:?required}"), 3)
+        self.assertIn('derive_llm_no_proxy "$(read_env_value "$oamb_compose_env_file" LLM_BASE_URL)"', compose_driver)
+        for variable in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+            self.assertNotIn(f"{variable}:", compose)
+
+if __name__ == "__main__":
+    unittest.main()

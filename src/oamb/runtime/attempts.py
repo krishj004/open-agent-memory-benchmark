@@ -1,0 +1,427 @@
+"""Durable reservation, intent, receipt, and terminal-attempt ordering."""
+
+from __future__ import annotations
+
+import hashlib
+from dataclasses import dataclass
+from decimal import Decimal
+
+from oamb.contracts.base import StrictContract
+from oamb.contracts.evidence import (
+    AttemptIntentRecord,
+    AttemptIntentRecordV2,
+    AttemptIntentRecordV3,
+    AttemptReceiptRecord,
+    AttemptRecordV2,
+    AttemptRecordV3,
+    AttemptRecordV4,
+    BudgetReservationRecord,
+    BudgetReservationRecordV2,
+    BudgetReservationRecordV3,
+    OccurrenceClaimRecord,
+)
+from oamb.contracts.ids import canonical_json_bytes
+from oamb.contracts.ports import ArtifactStorePort, RawPayloadSealRequest
+from oamb.contracts.specifications import BudgetScopeKindV2, BudgetScopeKindV3
+from oamb.contracts.states import AttemptOutcome
+
+from .budget import (
+    BudgetAmount,
+    BudgetLedger,
+    ReservationRequest,
+)
+from .budget import (
+    BudgetOwnerAllocation as RuntimeBudgetOwnerAllocation,
+)
+from .provider_lifecycle import ProviderLifecyclePort
+from .source_records import seal_source_contract
+
+
+class AttemptOrderingError(ValueError):
+    """Raised before a write when transaction records do not form one attempt."""
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedAttempt:
+    intent: AttemptIntentRecord | AttemptIntentRecordV2 | AttemptIntentRecordV3
+    reservation_id: str
+    intent_record_hash: str
+    dispatched: bool = False
+    receipt_sealed: bool = False
+    owner_maximums: tuple[RuntimeBudgetOwnerAllocation, ...] = ()
+    receipt_record_hash: str | None = None
+
+
+class AttemptCoordinator:
+    """Uses only the artifact port and never dispatches before durable intent."""
+
+    def __init__(
+        self,
+        store: ArtifactStorePort,
+        budget: BudgetLedger,
+        *,
+        provider_lifecycle: ProviderLifecyclePort | None = None,
+    ) -> None:
+        self._store = store
+        self._budget = budget
+        self._provider_lifecycle = provider_lifecycle
+        self._prepared: dict[str, _PreparedAttempt] = {}
+
+    def prepare(
+        self,
+        *,
+        claim: OccurrenceClaimRecord,
+        reservation: BudgetReservationRecord
+        | BudgetReservationRecordV2
+        | BudgetReservationRecordV3,
+        intent: AttemptIntentRecord | AttemptIntentRecordV2 | AttemptIntentRecordV3,
+        maximum: BudgetAmount,
+    ) -> None:
+        if isinstance(reservation, BudgetReservationRecordV2) or isinstance(
+            intent, AttemptIntentRecordV2
+        ):
+            raise AttemptOrderingError(
+                "memory conformance requires explicit owner allocations from the closed "
+                "composition root"
+            )
+        self._validate_prepare(claim, reservation, intent, maximum)
+        owner_maximums: tuple[RuntimeBudgetOwnerAllocation, ...] = ()
+        if isinstance(reservation, BudgetReservationRecordV3):
+            owner_maximums = _runtime_owner_allocations(reservation, maximum)
+            reservation_request = ReservationRequest(
+                reservation_id=reservation.reservation_id,
+                maximum=maximum,
+                owner_allocations=owner_maximums,
+            )
+        else:
+            assert isinstance(reservation, BudgetReservationRecord)
+            reservation_request = ReservationRequest(
+                reservation_id=reservation.reservation_id,
+                maximum=maximum,
+                role_binding_id=reservation.role_binding_id,
+            )
+        self._budget.reserve(reservation_request)
+        self._seal("occurrence-claims", claim.claim_id, claim)
+        self._seal("budget-reservations", reservation.reservation_id, reservation)
+        self._seal("attempt-intents", intent.attempt_id, intent)
+        intent_record_hash = hashlib.sha256(canonical_json_bytes(intent)).hexdigest()
+        self._prepared[intent.attempt_id] = _PreparedAttempt(
+            intent=intent,
+            reservation_id=reservation.reservation_id,
+            intent_record_hash=intent_record_hash,
+            owner_maximums=owner_maximums,
+        )
+
+    def mark_dispatched(self, attempt_id: str) -> None:
+        prepared = self._require_prepared(attempt_id)
+        if prepared.dispatched or prepared.receipt_sealed:
+            raise AttemptOrderingError("attempt is already dispatched or received")
+        if self._provider_lifecycle is not None:
+            self._provider_lifecycle.mark_attempt_dispatched(
+                attempt_id=attempt_id,
+                intent_record_hash=prepared.intent_record_hash,
+            )
+        self._prepared[attempt_id] = _PreparedAttempt(
+            intent=prepared.intent,
+            reservation_id=prepared.reservation_id,
+            intent_record_hash=prepared.intent_record_hash,
+            dispatched=True,
+            owner_maximums=prepared.owner_maximums,
+        )
+
+    def record_receipt(
+        self,
+        *,
+        receipt: AttemptReceiptRecord,
+        raw_payload: bytes,
+        media_type: str,
+        observed: BudgetAmount,
+        owner_observed: tuple[RuntimeBudgetOwnerAllocation, ...] | None = None,
+    ) -> None:
+        prepared = self._require_prepared(receipt.attempt_id)
+        if prepared.receipt_sealed:
+            raise AttemptOrderingError("attempt receipt is already sealed")
+        if self._provider_lifecycle is not None and not prepared.dispatched:
+            raise AttemptOrderingError("provider attempt receipt precedes dispatch guard")
+        expected_raw_hash = receipt.raw_response_ref or receipt.raw_error_ref
+        actual_raw_hash = hashlib.sha256(raw_payload).hexdigest()
+        if expected_raw_hash != actual_raw_hash:
+            raise AttemptOrderingError("attempt receipt raw hash does not match payload")
+        self._store.seal_raw(
+            RawPayloadSealRequest(
+                sha256=actual_raw_hash,
+                media_type=media_type,
+                compression="gzip",
+                payload_bytes=raw_payload,
+            )
+        )
+        self._seal("attempt-receipts", receipt.attempt_id, receipt)
+        committed_observed = observed
+        committed_owner_observed = owner_observed
+        if prepared.owner_maximums and owner_observed is None:
+            committed_owner_observed = prepared.owner_maximums
+            committed_observed = _sum_owner_amounts(prepared.owner_maximums)
+        self._budget.commit(
+            prepared.reservation_id,
+            observed=committed_observed,
+            owner_observed=committed_owner_observed,
+        )
+        if self._provider_lifecycle is not None:
+            self._provider_lifecycle.clear_attempt_after_receipt(
+                attempt_id=receipt.attempt_id,
+                expected_intent_record_hash=prepared.intent_record_hash,
+            )
+        self._prepared[receipt.attempt_id] = _PreparedAttempt(
+            intent=prepared.intent,
+            reservation_id=prepared.reservation_id,
+            intent_record_hash=prepared.intent_record_hash,
+            dispatched=prepared.dispatched,
+            receipt_sealed=True,
+            owner_maximums=prepared.owner_maximums,
+            receipt_record_hash=hashlib.sha256(canonical_json_bytes(receipt)).hexdigest(),
+        )
+
+    def seal_terminal(self, attempt: AttemptRecordV2 | AttemptRecordV3 | AttemptRecordV4) -> None:
+        prepared = self._require_prepared(attempt.attempt_id)
+        self._validate_terminal(prepared, attempt)
+        self._seal("attempts", attempt.attempt_id, attempt)
+
+    def mark_unknown(
+        self,
+        *,
+        reservation_id: str,
+        attempt: AttemptRecordV2 | AttemptRecordV3 | AttemptRecordV4,
+    ) -> None:
+        prepared = self._require_prepared(attempt.attempt_id)
+        if reservation_id != prepared.reservation_id:
+            raise AttemptOrderingError("unknown outcome names a different reservation")
+        if prepared.receipt_sealed:
+            raise AttemptOrderingError("received attempt cannot become unknown outcome")
+        if self._provider_lifecycle is not None and not prepared.dispatched:
+            raise AttemptOrderingError("provider attempt was not dispatched")
+        if attempt.outcome != AttemptOutcome.UNKNOWN_OUTCOME:
+            raise AttemptOrderingError("unknown outcome requires the matching terminal outcome")
+        if attempt.raw_response_ref is not None or attempt.raw_error_ref is not None:
+            raise AttemptOrderingError("unknown outcome cannot name a raw receipt")
+        self._validate_terminal(prepared, attempt)
+        self._budget.mark_unknown(reservation_id)
+        self._seal("attempts", attempt.attempt_id, attempt)
+
+    def _seal(self, collection: str, record_id: str, record: StrictContract) -> None:
+        seal_source_contract(
+            self._store,
+            relative_path=f"source/{collection}/{record_id}.json",
+            record_id=record_id,
+            record=record,
+        )
+
+    def _require_prepared(self, attempt_id: str) -> _PreparedAttempt:
+        try:
+            return self._prepared[attempt_id]
+        except KeyError as exc:
+            raise AttemptOrderingError("attempt was not durably prepared") from exc
+
+    @staticmethod
+    def _validate_prepare(
+        claim: OccurrenceClaimRecord,
+        reservation: BudgetReservationRecord
+        | BudgetReservationRecordV2
+        | BudgetReservationRecordV3,
+        intent: AttemptIntentRecord | AttemptIntentRecordV2 | AttemptIntentRecordV3,
+        maximum: BudgetAmount,
+    ) -> None:
+        legacy_pair = isinstance(reservation, BudgetReservationRecord) and isinstance(
+            intent, AttemptIntentRecord
+        )
+        conformance_pair = isinstance(reservation, BudgetReservationRecordV2) and isinstance(
+            intent, AttemptIntentRecordV2
+        )
+        allocation_pair = isinstance(reservation, BudgetReservationRecordV3) and isinstance(
+            intent, AttemptIntentRecordV3
+        )
+        if not (legacy_pair or conformance_pair or allocation_pair):
+            raise AttemptOrderingError("reservation and intent contract versions differ")
+        if intent.attempt_id != reservation.attempt_id:
+            raise AttemptOrderingError("intent and reservation attempt IDs differ")
+        if intent.claim_id != claim.claim_id or intent.reservation_id != reservation.reservation_id:
+            raise AttemptOrderingError("intent references a different claim or reservation")
+        if intent.parent_id != claim.occurrence_id:
+            raise AttemptOrderingError("intent parent differs from claimed occurrence")
+        if intent.stage != claim.stage:
+            raise AttemptOrderingError("intent stage differs from claimed occurrence")
+        if intent.reconciliation_capability != claim.reconciliation_capability:
+            raise AttemptOrderingError("intent reconciliation differs from claimed occurrence")
+        if intent.request_fingerprint != claim.request_fingerprint:
+            raise AttemptOrderingError("intent and claim request fingerprints differ")
+        expected_scope_kind = (
+            reservation.scope_kind
+            if allocation_pair
+            else BudgetScopeKindV3.MEMORY_CONFORMANCE
+            if conformance_pair
+            else {
+                "ingestion_plan": BudgetScopeKindV2.RUN,
+                "case": BudgetScopeKindV2.RUN,
+                "model_readiness": BudgetScopeKindV2.MODEL_READINESS,
+            }[intent.parent_kind]
+        )
+        if not allocation_pair and (
+            reservation.scope_kind != expected_scope_kind
+            or reservation.scope_id != intent.parent_id
+        ):
+            raise AttemptOrderingError("reservation scope differs from the attempt parent")
+        if not allocation_pair:
+            assert isinstance(intent, (AttemptIntentRecord, AttemptIntentRecordV2))
+            assert isinstance(reservation, (BudgetReservationRecord, BudgetReservationRecordV2))
+            if intent.role_binding_id != reservation.role_binding_id:
+                raise AttemptOrderingError("intent and reservation roles differ")
+        if conformance_pair:
+            assert isinstance(reservation, BudgetReservationRecordV2)
+            assert isinstance(intent, AttemptIntentRecordV2)
+            if (
+                intent.dispatch_owner_kind != reservation.dispatch_owner_kind
+                or intent.provider_operation_ceiling_id != reservation.provider_operation_ceiling_id
+                or intent.internal_usage_role_binding_ids
+                != reservation.internal_usage_role_binding_ids
+            ):
+                raise AttemptOrderingError(
+                    "intent and reservation discriminated budget owners differ"
+                )
+        if allocation_pair:
+            assert isinstance(reservation, BudgetReservationRecordV3)
+            assert isinstance(intent, AttemptIntentRecordV3)
+            if (
+                intent.reservation_hash != reservation.reservation_hash
+                or intent.budget_id != reservation.budget_id
+                or intent.budget_hash != reservation.budget_hash
+                or intent.dispatch_route_id != reservation.dispatch_route_id
+                or intent.dispatch_route_hash != reservation.dispatch_route_hash
+                or intent.scope_kind != reservation.scope_kind
+                or intent.scope_id != reservation.scope_id
+            ):
+                raise AttemptOrderingError("version 3 intent differs from its reservation route")
+        expected_resources = tuple(
+            (item.dimension_id, item.maximum, item.unit)
+            for item in reservation.reserved_resource_ceilings
+        )
+        if maximum.resources != expected_resources:
+            raise AttemptOrderingError("reservation resource ceilings differ from runtime maximum")
+        if maximum.attempts != reservation.reserved_attempts:
+            raise AttemptOrderingError("reservation attempt count differs from runtime maximum")
+        if maximum.input_tokens != reservation.reserved_input_tokens:
+            raise AttemptOrderingError("reservation input tokens differ from runtime maximum")
+        if maximum.output_tokens != reservation.reserved_output_tokens:
+            raise AttemptOrderingError("reservation output tokens differ from runtime maximum")
+        if maximum.wall_seconds != reservation.reserved_dispatch_wall_seconds:
+            raise AttemptOrderingError("reservation wall time differs from runtime maximum")
+        if maximum.cost != (reservation.reserved_cost or 0):
+            raise AttemptOrderingError("reservation cost differs from runtime maximum")
+        if sum(item[3] for item in maximum.provider_units) != reservation.reserved_provider_units:
+            raise AttemptOrderingError("reservation provider units differ from runtime maximum")
+
+    @staticmethod
+    def _validate_terminal(
+        prepared: _PreparedAttempt,
+        attempt: AttemptRecordV2 | AttemptRecordV3 | AttemptRecordV4,
+    ) -> None:
+        intent = prepared.intent
+        version_matches = (
+            (isinstance(intent, AttemptIntentRecord) and isinstance(attempt, AttemptRecordV2))
+            or (isinstance(intent, AttemptIntentRecordV2) and isinstance(attempt, AttemptRecordV3))
+            or (
+                isinstance(intent, AttemptIntentRecordV3)
+                and (
+                    isinstance(attempt, AttemptRecordV4)
+                    if intent.scope_kind == BudgetScopeKindV3.RUN
+                    else isinstance(attempt, AttemptRecordV3)
+                )
+            )
+        )
+        if not version_matches:
+            raise AttemptOrderingError("terminal attempt contract version differs from intent")
+        if (
+            attempt.parent_kind != intent.parent_kind
+            or attempt.parent_id != intent.parent_id
+            or attempt.stage != intent.stage
+            or attempt.request_fingerprint != intent.request_fingerprint
+            or attempt.reconciliation_capability != intent.reconciliation_capability
+            or attempt.idempotency_key_hash != intent.idempotency_key_hash
+        ):
+            raise AttemptOrderingError("terminal attempt differs from its durable intent")
+        if isinstance(attempt, AttemptRecordV4):
+            if not isinstance(intent, AttemptIntentRecordV3) or (
+                attempt.intent_hash != intent.intent_hash
+                or attempt.dispatch_route_id != intent.dispatch_route_id
+                or attempt.dispatch_route_hash != intent.dispatch_route_hash
+            ):
+                raise AttemptOrderingError("version 4 terminal differs from its intent route")
+            if (
+                prepared.receipt_sealed
+                and attempt.receipt_record_hash != prepared.receipt_record_hash
+            ):
+                raise AttemptOrderingError("version 4 terminal differs from its durable receipt")
+        if attempt.outcome == AttemptOutcome.UNKNOWN_OUTCOME:
+            if prepared.receipt_sealed:
+                raise AttemptOrderingError("received attempt cannot be unknown")
+        elif not prepared.receipt_sealed:
+            raise AttemptOrderingError("terminal attempt requires a durable receipt")
+
+
+def _runtime_owner_allocations(
+    reservation: BudgetReservationRecordV3,
+    maximum: BudgetAmount,
+) -> tuple[RuntimeBudgetOwnerAllocation, ...]:
+    provider_dimensions = {
+        provider: (provider, operation, unit, maximum_units)
+        for provider, operation, unit, maximum_units in maximum.provider_units
+    }
+    allocations: list[RuntimeBudgetOwnerAllocation] = []
+    for allocation in reservation.owner_allocations:
+        provider_units: tuple[tuple[str, str, str, int], ...] = ()
+        if allocation.allocated_provider_units:
+            if allocation.allocated_provider_units != int(allocation.allocated_provider_units):
+                raise AttemptOrderingError("provider owner allocation must use integral units")
+            try:
+                provider, operation, unit, _maximum_units = provider_dimensions.pop(
+                    allocation.owner_id
+                )
+            except KeyError as exc:
+                raise AttemptOrderingError(
+                    "owner allocations require matching provider-unit dimensions"
+                ) from exc
+            provider_units = (
+                (
+                    provider,
+                    operation,
+                    unit,
+                    int(allocation.allocated_provider_units),
+                ),
+            )
+        allocations.append(
+            RuntimeBudgetOwnerAllocation(
+                allocation.owner_id,
+                BudgetAmount(
+                    attempts=allocation.allocated_attempts,
+                    input_tokens=allocation.allocated_input_tokens,
+                    output_tokens=allocation.allocated_output_tokens,
+                    wall_seconds=allocation.allocated_dispatch_wall_seconds,
+                    cost=allocation.allocated_cost or Decimal("0"),
+                    resources=tuple(
+                        (item.dimension_id, item.maximum, item.unit)
+                        for item in allocation.allocated_resource_ceilings
+                    ),
+                    provider_units=provider_units,
+                ),
+            )
+        )
+    if not provider_dimensions:
+        return tuple(allocations)
+    raise AttemptOrderingError("provider-unit dimensions exceed the owner allocation inventory")
+
+
+def _sum_owner_amounts(
+    allocations: tuple[RuntimeBudgetOwnerAllocation, ...],
+) -> BudgetAmount:
+    total = BudgetAmount.zero()
+    for allocation in allocations:
+        total = total.add(allocation.maximum)
+    return total

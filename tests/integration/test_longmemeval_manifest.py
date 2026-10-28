@@ -1,0 +1,249 @@
+from __future__ import annotations
+
+import importlib
+from dataclasses import replace
+from pathlib import Path
+from types import ModuleType
+
+import pytest
+
+from oamb.artifacts.validation.catalog import validate_catalog_profile
+from oamb.contracts.states import ValidationDisposition
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+SOURCE = REPOSITORY_ROOT / "datasets" / "longmemeval-cleaned" / "longmemeval_s_cleaned.json"
+
+EXPECTED_IDS = (
+    "72e3ee87",
+    "22d2cb42",
+    "e61a7584",
+    "eace081b",
+    "8fb83627",
+    "21d02d0d",
+    "gpt4_a56e767c",
+    "gpt4_15e38248",
+    "4bc144e2",
+    "157a136e",
+    "e3fc4d6e",
+    "41275add",
+    "fca762bc",
+    "488d3006",
+    "8cf51dda",
+    "32260d93",
+    "1d4e3b97",
+    "0a34ad58",
+    "07b6f563",
+    "d6233ab6",
+    "6b168ec8",
+    "bc8a6e93_abs",
+    "ccb36322",
+    "8e9d538c",
+    "c14c00dd",
+    "a3045048",
+    "gpt4_ec93e27f",
+    "gpt4_8279ba03",
+    "gpt4_4edbafa2",
+    "b46e15ed",
+)
+EXPECTED_LME6_IDS = (
+    "72e3ee87",
+    "21d02d0d",
+    "e3fc4d6e",
+    "32260d93",
+    "6b168ec8",
+    "a3045048",
+)
+EXPECTED_LME60_IDS = (
+    "72e3ee87",
+    "22d2cb42",
+    "e61a7584",
+    "eace081b",
+    "8fb83627",
+    "f685340e_abs",
+    "07741c44",
+    "f685340e",
+    "89941a93",
+    "031748ae_abs",
+    "21d02d0d",
+    "gpt4_a56e767c",
+    "gpt4_15e38248",
+    "4bc144e2",
+    "157a136e",
+    "8e91e7d9",
+    "gpt4_59c863d7",
+    "2ce6a0f2",
+    "ba358f49",
+    "cc06de0d",
+    "e3fc4d6e",
+    "41275add",
+    "fca762bc",
+    "488d3006",
+    "8cf51dda",
+    "352ab8bd",
+    "3e321797",
+    "eaca4986",
+    "f523d9fe",
+    "71a3fd6b",
+    "32260d93",
+    "1d4e3b97",
+    "0a34ad58",
+    "07b6f563",
+    "d6233ab6",
+    "1c0ddc50",
+    "b0479f84",
+    "caf03d32",
+    "d24813b1",
+    "75832dbd",
+    "6b168ec8",
+    "bc8a6e93_abs",
+    "ccb36322",
+    "8e9d538c",
+    "c14c00dd",
+    "7527f7e2",
+    "c960da58",
+    "6f9b354f",
+    "86b68151",
+    "caf9ead2",
+    "a3045048",
+    "gpt4_ec93e27f",
+    "gpt4_8279ba03",
+    "gpt4_4edbafa2",
+    "b46e15ed",
+    "gpt4_18c2b244",
+    "dcfa8644",
+    "gpt4_c27434e8_abs",
+    "gpt4_fa19884d",
+    "a3838d2b",
+)
+
+
+def require_longmemeval() -> ModuleType:
+    try:
+        return importlib.import_module("oamb.workloads.longmemeval")
+    except ModuleNotFoundError:
+        pytest.fail("oamb.workloads.longmemeval is not implemented", pytrace=False)
+
+
+@pytest.mark.skipif(not SOURCE.exists(), reason="download the pinned LongMemEval S dataset")
+def test_real_pinned_source_builds_exact_balanced_lme60_manifest() -> None:
+    lme = require_longmemeval()
+
+    bundle = lme.build_lme60_bundle(SOURCE)
+    permuted = lme.select_lme60(tuple(reversed(lme.load_longmemeval_rows(SOURCE))))
+
+    assert tuple(row.question_id for row in bundle.selected_rows) == EXPECTED_LME60_IDS
+    assert tuple(row.question_id for row in permuted) == EXPECTED_LME60_IDS
+    assert bundle.case_manifest.workload_id == "lme60-balanced-v1"
+    assert bundle.case_manifest.manifest_id == "lme60-balanced-v1-manifest-v1"
+    assert (
+        bundle.case_manifest.manifest_hash
+        == "20afb9ae0d18a5821871e76a1b90df573fd5f155511c264249fdb49154088962"
+    )
+    assert len(bundle.case_manifest.logical_contexts) == 60
+    assert len(bundle.case_manifest.ingestion_plans) == 60
+    assert len(bundle.case_manifest.cases) == 60
+    assert sum(plan.intended_source_count for plan in bundle.ingestion_plans) == 2_826
+    assert sum(len(row.answer_session_ids) for row in bundle.selected_rows) == 103
+    assert {
+        question_type: sum(row.question_type == question_type for row in bundle.selected_rows)
+        for question_type in lme.QUESTION_TYPES
+    } == {question_type: 10 for question_type in lme.QUESTION_TYPES}
+    assert bundle.label_mismatch_question_ids == (
+        "22d2cb42",
+        "eace081b",
+        "f685340e_abs",
+        "031748ae_abs",
+        "bc8a6e93_abs",
+        "gpt4_c27434e8_abs",
+        "gpt4_fa19884d",
+    )
+
+    result = validate_catalog_profile("oamb-t8-workload-lme60-v1", bundle)
+    assert result.disposition == ValidationDisposition.VALIDATED, result.issues
+    drifted = replace(
+        bundle,
+        case_manifest=bundle.case_manifest.model_copy(update={"manifest_hash": "f" * 64}),
+    )
+    drifted_result = validate_catalog_profile("oamb-t8-workload-lme60-v1", drifted)
+    assert drifted_result.disposition == ValidationDisposition.INVALID
+    assert "workload.lme60.selector-membership.v1" in drifted_result.failed_rule_ids
+
+
+@pytest.mark.skipif(not SOURCE.exists(), reason="download the pinned LongMemEval S dataset")
+def test_lme_profile_binds_complete_dataset_source_identity() -> None:
+    lme = require_longmemeval()
+    full = lme.build_lme30_bundle(SOURCE)
+    original_dataset = full.dataset_manifest
+    original_file = original_dataset.source_files[0]
+    baseline = validate_catalog_profile("oamb-t8-workload-lme30-v1", full)
+    drifted_datasets = (
+        original_dataset.model_copy(update={"split": "changed"}),
+        original_dataset.model_copy(update={"payload_policy": "changed"}),
+        original_dataset.model_copy(
+            update={
+                "source_files": (
+                    original_file.model_copy(update={"relative_path": "changed.json"}),
+                )
+            }
+        ),
+        original_dataset.model_copy(
+            update={"source_files": (original_file.model_copy(update={"byte_count": 1}),)}
+        ),
+        original_dataset.model_copy(
+            update={
+                "source_files": (original_file.model_copy(update={"license_id": "Apache-2.0"}),)
+            }
+        ),
+    )
+
+    for dataset in drifted_datasets:
+        result = validate_catalog_profile(
+            "oamb-t8-workload-lme30-v1",
+            replace(full, dataset_manifest=dataset),
+        )
+        assert result.disposition == ValidationDisposition.INVALID
+        assert "workload.lme.source-manifest.v1" in result.failed_rule_ids
+        assert result.target_hash != baseline.target_hash
+
+
+@pytest.mark.skipif(not SOURCE.exists(), reason="download the pinned LongMemEval S dataset")
+def test_lme_profile_rejects_case_reference_payload_tamper() -> None:
+    lme = require_longmemeval()
+    smoke = lme.build_lme6_bundle(lme.build_lme30_bundle(SOURCE))
+    baseline = validate_catalog_profile("oamb-t8-workload-lme6-v1", smoke)
+    tampered = replace(
+        smoke,
+        case_plans=(
+            replace(smoke.case_plans[0], reference_payload=b'"attacker-gold"'),
+            *smoke.case_plans[1:],
+        ),
+    )
+
+    result = validate_catalog_profile("oamb-t8-workload-lme6-v1", tampered)
+
+    assert result.target_hash != baseline.target_hash
+    assert result.disposition == ValidationDisposition.INVALID
+    assert "workload.lme.prompt-answer-parser.v1" in result.failed_rule_ids
+
+
+@pytest.mark.skipif(not SOURCE.exists(), reason="download the pinned LongMemEval S dataset")
+def test_lme_profile_rejects_runtime_source_payload_tamper() -> None:
+    lme = require_longmemeval()
+    smoke = lme.build_lme6_bundle(lme.build_lme30_bundle(SOURCE))
+    baseline = validate_catalog_profile("oamb-t8-workload-lme6-v1", smoke)
+    original_plan = smoke.ingestion_plans[0]
+    original_unit = original_plan.ordered_source_units[0]
+    tampered_plan = replace(
+        original_plan,
+        ordered_source_units=(
+            replace(original_unit, payload_bytes=b"attacker source payload"),
+            *original_plan.ordered_source_units[1:],
+        ),
+    )
+    tampered = replace(smoke, ingestion_plans=(tampered_plan, *smoke.ingestion_plans[1:]))
+
+    result = validate_catalog_profile("oamb-t8-workload-lme6-v1", tampered)
+
+    assert result.target_hash != baseline.target_hash
+    assert result.disposition == ValidationDisposition.INVALID
+    assert "workload.lme.source-manifest.v1" in result.failed_rule_ids

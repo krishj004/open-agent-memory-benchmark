@@ -1,0 +1,209 @@
+# Frozen benchmark profile configuration for one complete v0.1 LME-60 evaluation.
+# To start a different evaluation, edit this file before running ./precheck.sh; precheck
+# snapshots the accepted configuration into resolved-plan.json, which ./run.sh then uses.
+# Do not edit that resolved plan. During --resume, only the current history and question
+# concurrency caps below are reread for unfinished work; every other setting remains frozen
+# from the original resolved plan. Values marked "Frozen benchmark profile value" are required
+# by this v0.1 profile and need a code/profile change, not only a YAML edit, to be changed.
+# Secrets and human-supplied external endpoints remain environment references; the public
+# managed-local endpoint lives here.
+comparison: v0.1-lme60
+
+dataset:
+  dataset_id: longmemeval-s-cleaned
+  workload_id: lme60-balanced-v1
+  selection: lme60
+  path: datasets/longmemeval-cleaned/longmemeval_s_cleaned.json
+  revision: 98d7416c24c778c2fee6e6f3006e7a073259d48f
+  source_sha256: d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442
+  case_manifest_hash: 20afb9ae0d18a5821871e76a1b90df573fd5f155511c264249fdb49154088962
+
+embedding:
+  managed_local_endpoint: http://127.0.0.1:18000/v1
+
+cells:
+  - cell_id: hindsight-lme60
+    provider_id: hindsight
+    adapter_profile_id: hindsight-rest-v1
+    endpoint_variable: OAMB_HINDSIGHT_BASE_URL
+    credential_variable: not_applicable
+    recipient: local-hindsight-service
+    producer_role: hindsight_extraction
+    embedding_role: embedding
+    answer_role: answer
+    judge_role: judge
+    retrieval_binding: hindsight
+  - cell_id: mem0-lme60
+    provider_id: mem0
+    adapter_profile_id: mem0-rest-v1
+    endpoint_variable: OAMB_MEM0_BASE_URL
+    credential_variable: OAMB_MEM0_ADMIN_API_KEY
+    recipient: local-mem0-service
+    producer_role: mem0_extraction
+    embedding_role: embedding
+    answer_role: answer
+    judge_role: judge
+    retrieval_binding: mem0
+  - cell_id: openviking-lme60
+    provider_id: openviking
+    adapter_profile_id: openviking-session-rest-v1
+    endpoint_variable: OAMB_OPENVIKING_BASE_URL
+    credential_variable: OAMB_OPENVIKING_USER_API_KEY
+    recipient: local-openviking-service
+    producer_role: openviking_semantic_understanding
+    embedding_role: embedding
+    answer_role: answer
+    judge_role: judge
+    retrieval_binding: openviking
+
+llm_profiles:
+  light_model: &light_model
+    env: LLM_LIGHT_MODEL
+  deep_model: &deep_model
+    env: LLM_DEEP_MODEL
+
+models:
+  # DeepSeek scale is low < high < max. Low is enabled thinking at rank 1/3.
+  # Every generative role uses the one generic LLM connection from root .env.
+  # Provider-owned producer roles use Flash/low to reduce latency and tokens.
+  hindsight_extraction:
+    model: *light_model
+    thinking_effort: low
+    endpoint_variable: LLM_BASE_URL
+    credential_variable: LLM_API_KEY
+    recipient: llm-api
+    execution_owner: provider_internal
+    proof_kind: effective_config_and_outbound_request
+    proof_reference: reasoning_effort=low
+    usage_coverage: classified
+  mem0_extraction:
+    model: *light_model
+    thinking_effort: low
+    endpoint_variable: LLM_BASE_URL
+    credential_variable: LLM_API_KEY
+    recipient: llm-api
+    execution_owner: provider_internal
+    proof_kind: effective_config_and_outbound_request
+    proof_reference: reasoning_effort=low
+    usage_coverage: classified
+  openviking_semantic_understanding:
+    model: *light_model
+    thinking_effort: low
+    endpoint_variable: LLM_BASE_URL
+    credential_variable: LLM_API_KEY
+    recipient: llm-api
+    execution_owner: provider_internal
+    proof_kind: effective_config_and_outbound_request
+    proof_reference: reasoning_effort=low
+    usage_coverage: classified
+  answer:
+    model: *deep_model
+    thinking_effort: low
+    endpoint_variable: LLM_BASE_URL
+    credential_variable: LLM_API_KEY
+    recipient: llm-api
+    execution_owner: harness
+    proof_kind: sealed_outbound_request_and_response
+    proof_reference: reasoning_effort=low
+    usage_coverage: classified
+  # High is the middle rank 2/3, not maximum. It is reserved for offline judging.
+  judge:
+    model: *light_model
+    thinking_effort: high
+    endpoint_variable: LLM_BASE_URL
+    credential_variable: LLM_API_KEY
+    recipient: llm-api
+    execution_owner: harness
+    proof_kind: sealed_outbound_request_and_response
+    proof_reference: reasoning_effort=high
+    usage_coverage: classified
+  # Embedding is non-generative. A human external endpoint comes from root .env;
+  # otherwise the managed-local endpoint above is frozen into the resolved plan.
+  embedding:
+    model: qwen3-embedding:0.6b
+    thinking_effort: not_applicable
+    endpoint_variable: OAMB_EMBEDDING_BASE_URL
+    credential_variable: OAMB_EMBEDDING_API_KEY
+    recipient: embedding-api
+    execution_owner: provider_internal
+    proof_kind: model_dimension_probe
+    proof_reference: not_applicable
+    usage_coverage: classified
+
+retrieval:
+  generation: disabled
+  top_k: 150
+  bindings:
+    - binding_id: hindsight
+      provider_id: hindsight
+      route: recall
+      query_embedding_role: embedding
+      disabled_feature: reflect
+      disabled_value: absent
+      request_constraint: omit_reflect
+      proof_kind: complete_outbound_trace
+    - binding_id: mem0
+      provider_id: mem0
+      route: /search
+      query_embedding_role: embedding
+      disabled_feature: native_reranking
+      disabled_value: disabled
+      request_constraint: rerank_field_absent_by_schema
+      proof_kind: effective_config_and_complete_outbound_trace
+    - binding_id: openviking
+      provider_id: openviking
+      route: /api/v1/search/find
+      query_embedding_role: embedding
+      disabled_feature: session_intent
+      disabled_value: not_applicable
+      request_constraint: no_session_id_on_find
+      proof_kind: source_verified_endpoint_and_complete_outbound_trace
+
+execution:
+  # Two stages parallel ingestion and evalation let questions share one ingested history and run in parallel while other histories are ingested.
+
+  # Providers evaluating the dataset concurrently.
+  # Example: 3 runs Hindsight, Mem0, and OpenViking together, each with its own limits below.
+  max_parallel_providers_per_dataset: 3
+
+  # max_parallel_history_ingestions_per_provider for ingesting histories, and max_parallel_questions_per_provider for evaluating questions.
+  # Concurrent ingestion: sessions within each history stay ordered. Example: 6 ingests histories for Q1-Q6 together; Q7's can start when Q1's is ready.
+  # The ingestion slot is released before Q1's retrieval, answer, and judge steps.
+  # Concurrent evaluations: each covering retrieval -> answer -> judge -> saved result.
+  max_parallel_history_ingestions_per_provider: 3
+  max_parallel_questions_per_provider: 3
+
+  # Frozen benchmark profile value: 2 retries of one ingestion batch after a confirmed transient failure.
+  # Example: 1 initial submission + 2 retries = 3 submissions in the same question scope.
+  # After exhaustion, record that batch as skipped and continue with later batches.
+  max_retries_per_operation: 2
+
+  # Frozen benchmark profile value: 10 native retries for memory extraction within a batch.
+  # These retries happen inside the provider before OAMB considers resubmitting the batch.
+  extraction_max_retries: 10
+
+  # Frozen benchmark profile value: 6 total model attempts for the answer and judge separately, including the first.
+  # Invalid output can trigger a corrected attempt; exhausted rate limits can also advance attempts.
+  # Example: answering gets up to 6 attempts, and judging gets its own allowance of 6.
+  model_max_attempts: 6
+
+  # Frozen benchmark profile value: 2 extra request retries within each answer/judge attempt for network errors or retryable HTTP errors.
+  # Example: 1 request + 2 retries = 3 requests per attempt, up to 18 across 6 model attempts.
+  model_transport_max_retries: 2
+
+  # Timeout for an external request or provider task polling wait; 900 seconds = 15 minutes.
+  # Each retry gets its own timeout, so a whole history, question, or run can take longer.
+  operation_timeout_seconds: 900
+
+decision:
+  # All providers need 60 judged results; an accuracy leader must pass both thresholds against every other provider.
+
+  # Frozen benchmark profile value: minimum absolute accuracy gap of "0.05" (5 percentage points).
+  # Example: 33/60 correct (55%) versus 30/60 (50%) meets this threshold.
+  # The McNemar check below must also pass.
+  minimum_accuracy_delta: "0.05"
+
+  # Frozen benchmark profile value: exact two-sided McNemar p-value limit of "0.05"; compares questions only one provider got right.
+  # Example: 6 Hindsight-only wins versus 0 Mem0-only wins gives p = 0.03125 and passes.
+  # A 3-to-0 split gives p = 0.25 and fails, despite meeting the 5-percentage-point gap.
+  maximum_exact_mcnemar_p_value: "0.05"
