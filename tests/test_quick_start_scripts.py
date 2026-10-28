@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
@@ -31,6 +31,10 @@ RESOLVED_PLAN_HASH = "a" * 64
 LONGMEMEVAL_SOURCE = (
     REPOSITORY_ROOT / "datasets" / "longmemeval-cleaned" / "longmemeval_s_cleaned.json"
 )
+
+# Upper bound for a single script invocation. The scripts chain uv/docker calls, so
+# a cold, loaded CI runner (notably macOS) can exceed a tighter budget on first run.
+SUBPROCESS_TIMEOUT_SECONDS = 60
 
 PROVIDER_MODEL_CONNECTION_ALIASES = (
     "OAMB_HINDSIGHT_LLM_BASE_URL",
@@ -133,7 +137,7 @@ def test_precheck_rejects_an_empty_model_name(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode != 0
@@ -661,7 +665,7 @@ def test_precheck_stops_before_provider_start_when_full_input_encoding_fails(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 46
@@ -696,7 +700,7 @@ def test_precheck_routes_default_local_embedding_by_operating_system(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -747,7 +751,7 @@ def test_precheck_managed_local_embedding_leaves_prepared_dotenv_byte_identical(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -784,7 +788,7 @@ def test_precheck_replaces_existing_provider_project_for_new_run(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -817,7 +821,7 @@ def test_precheck_does_not_replace_an_active_provider_project(tmp_path: Path) ->
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
     assert first.returncode == 0, first.stdout + first.stderr
     old_project = next(
@@ -858,7 +862,7 @@ fi
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode != 0
@@ -884,7 +888,7 @@ def test_precheck_publishes_state_and_plan_below_outputs_root(tmp_path: Path) ->
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -926,7 +930,7 @@ def test_precheck_configured_embedding_service_pair_skips_local_server(tmp_path:
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -962,7 +966,7 @@ def test_precheck_embedding_url_override_is_external_without_dotenv_writeback(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -998,7 +1002,7 @@ def test_precheck_keyless_embedding_service_skips_local_server(tmp_path: Path) -
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -1033,7 +1037,7 @@ def test_precheck_explicit_fallback_address_does_not_take_startup_ownership(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -1065,7 +1069,7 @@ def test_precheck_explicit_fallback_address_ignores_stale_local_ownership(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -1095,7 +1099,7 @@ def test_precheck_does_not_publish_state_when_provider_preparation_fails(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 73
@@ -1114,7 +1118,7 @@ def test_failed_reprecheck_preserves_previous_quick_start_selection(tmp_path: Pa
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
     assert first.returncode == 0, first.stdout + first.stderr
     state_path = root / "outputs" / "tmp" / "quick-start-current.json"
@@ -1131,7 +1135,7 @@ def test_failed_reprecheck_preserves_previous_quick_start_selection(tmp_path: Pa
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert second.returncode == 73
@@ -1158,7 +1162,7 @@ def test_precheck_rejects_embedding_api_key_without_service_url(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode != 0
@@ -1209,7 +1213,7 @@ def test_precheck_completes_single_root_env_without_provider_copy(tmp_path: Path
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -1277,7 +1281,7 @@ def test_precheck_rejects_symlinked_root_env_without_mutating_target(tmp_path: P
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode != 0
@@ -1307,7 +1311,7 @@ def test_precheck_rejects_unsupported_llm_url_type(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode != 0
@@ -1341,7 +1345,7 @@ def test_precheck_rejects_duplicate_generic_llm_assignment_before_provider_start
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode != 0
@@ -1361,7 +1365,7 @@ def test_precheck_requires_operator_prepared_root_env(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode != 0
@@ -1793,7 +1797,7 @@ def test_run_saves_stdout_and_stderr_without_changing_exit_status(
         assert process.poll() is None
     finally:
         release.touch()
-        stdout, stderr = process.communicate(timeout=20)
+        stdout, stderr = process.communicate(timeout=SUBPROCESS_TIMEOUT_SECONDS)
 
     assert process.returncode == doctor_exit_code, stdout + stderr
     assert "doctor output sentinel" in stdout
@@ -1828,7 +1832,7 @@ def test_run_dry_run_validates_without_dispatch(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -1864,7 +1868,7 @@ def test_run_full_input_encoding_failure_prevents_benchmark_dispatch(tmp_path: P
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 46
@@ -1918,7 +1922,7 @@ def test_run_without_resume_starts_a_fresh_execution_every_time(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
     original_logs = {
         path: path.read_bytes() for path in (root / "outputs" / "tmp").glob("run-*.log")
@@ -1932,7 +1936,7 @@ def test_run_without_resume_starts_a_fresh_execution_every_time(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert first.returncode == 0, first.stdout + first.stderr
@@ -1968,7 +1972,7 @@ def test_run_routes_results_to_mode_specific_outputs_directory(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -1993,7 +1997,7 @@ def test_run_defaults_to_smoke_and_builds_one_question_comparison(tmp_path: Path
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -2031,7 +2035,7 @@ def test_run_reports_live_cell_progress_while_provider_is_running(tmp_path: Path
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -2071,7 +2075,7 @@ def test_run_full_reports_progress_per_provider_out_of_sixty(tmp_path: Path) -> 
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -2122,7 +2126,7 @@ def test_full_run_logs_saved_question_updates_before_command_finishes(
     )
 
     result = subprocess.run(
-        arguments, cwd=root, env=env, capture_output=True, text=True, check=False, timeout=20
+        arguments, cwd=root, env=env, capture_output=True, text=True, check=False, timeout=SUBPROCESS_TIMEOUT_SECONDS
     )
 
     assert result.returncode == 44, result.stdout + result.stderr
@@ -2186,7 +2190,7 @@ def _run_progress_fixture(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
 
@@ -2280,7 +2284,7 @@ def test_run_dispatches_all_provider_cells_together(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -2339,7 +2343,7 @@ def test_run_smoke_ignores_old_capsule_and_preserves_invalid_validation(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -2365,7 +2369,7 @@ def test_run_smoke_starts_fresh_on_every_invocation(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
     assert first.returncode == 0, first.stdout + first.stderr
     result_map = root / "outputs" / "smoke-test" / "lme60-test" / "results" / "smoke.json"
@@ -2381,7 +2385,7 @@ def test_run_smoke_starts_fresh_on_every_invocation(
             capture_output=True,
             text=True,
             check=False,
-            timeout=20,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
         )
         assert retried.returncode == 0, retried.stdout + retried.stderr
 
@@ -2408,7 +2412,7 @@ def test_run_full_test_runs_directly_and_validates_sixty_case_report(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -2469,7 +2473,7 @@ def test_run_full_test_ignores_completed_old_capsules_and_preserves_validation(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
     assert first.returncode == 0, first.stdout + first.stderr
     full_validation = (
@@ -2484,7 +2488,7 @@ def test_run_full_test_ignores_completed_old_capsules_and_preserves_validation(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert second.returncode == 0, second.stdout + second.stderr
@@ -2510,7 +2514,7 @@ def test_run_full_test_starts_fresh_instead_of_reusing_failed_result_map(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
     assert first.returncode == 0, first.stdout + first.stderr
     full_result = root / "outputs" / "full-test" / "lme60-test" / "results" / "full.json"
@@ -2525,7 +2529,7 @@ def test_run_full_test_starts_fresh_instead_of_reusing_failed_result_map(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert second.returncode == 0, second.stdout + second.stderr
@@ -2536,7 +2540,7 @@ def test_run_full_test_starts_fresh_instead_of_reusing_failed_result_map(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
     assert third.returncode == 0, third.stdout + third.stderr
     full_run_calls = [
@@ -2589,7 +2593,7 @@ def test_run_rejects_resume_without_full_before_dispatch(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode != 0
@@ -2620,7 +2624,7 @@ def test_run_full_resume_runs_once_and_compares_provider_results(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -2694,7 +2698,7 @@ def test_run_generate_report_skips_precheck_services_and_provider_calls(tmp_path
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -2751,7 +2755,7 @@ def test_run_full_resume_probes_configured_embedding_without_starting_local(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -2796,7 +2800,7 @@ def test_run_full_resume_ignores_embedding_ownership_state(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -2837,7 +2841,7 @@ def test_run_full_resume_accepts_legacy_plan_without_embedding_identity(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
@@ -2954,7 +2958,7 @@ fi
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode != 0
@@ -3010,7 +3014,7 @@ python3 -c 'import json; print(json.dumps({"data": [{"embedding": [0.0] * 1024}]
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode != 0
@@ -3068,7 +3072,7 @@ def test_run_full_resume_failure_stops_before_comparison(
         capture_output=True,
         text=True,
         check=False,
-        timeout=20,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
     )
 
     assert result.returncode != 0
