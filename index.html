@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Open Agent Memory Benchmark (OAMB)</title>
+<meta name="description" content="A reproducible, evidence-first benchmark for comparing self-hosted agent-memory systems through their native APIs.">
+<style>
+  :root{
+    --bg:#ffffff; --fg:#111418; --muted:#5b6470; --line:#e3e6ea;
+    --card:#f7f8fa; --accent:#0b63ce; --good:#0a7d51;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#0e1116; --fg:#e8ecf1; --muted:#98a2b3; --line:#222a35;
+           --card:#151b23; --accent:#62a8f5; --good:#4ade80; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  main{max-width:940px;margin:0 auto;padding:56px 24px 72px}
+  h1{font-size:2rem;line-height:1.2;margin:0 0 .4rem;letter-spacing:-.02em}
+  .sub{color:var(--muted);margin:0 0 2rem;font-size:1.02rem}
+  h2{font-size:1.05rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);
+     margin:2.6rem 0 .9rem;font-weight:600}
+  p{margin:0 0 1rem}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .links{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(230px,1fr))}
+  .links a{display:block;padding:14px 16px;border:1px solid var(--line);border-radius:10px;
+           background:var(--card);color:var(--fg);transition:border-color .15s,transform .15s}
+  .links a:hover{border-color:var(--accent);transform:translateY(-1px);text-decoration:none}
+  .links b{display:block;font-weight:600;margin-bottom:2px}
+  .links span{color:var(--muted);font-size:.88rem}
+  table{width:100%;border-collapse:collapse;font-size:.94rem;margin-top:.4rem}
+  th,td{padding:9px 10px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+  th:first-child,td:first-child{text-align:left}
+  thead th{color:var(--muted);font-weight:600;font-size:.82rem;text-transform:uppercase;letter-spacing:.05em}
+  td strong{color:var(--good)}
+  .note{color:var(--muted);font-size:.86rem;margin-top:.7rem}
+  footer{margin-top:3rem;padding-top:1.4rem;border-top:1px solid var(--line);
+         color:var(--muted);font-size:.88rem;display:flex;flex-wrap:wrap;gap:8px 18px}
+  @media (max-width:640px){main{padding:36px 18px 56px} h1{font-size:1.6rem}
+    table{font-size:.85rem} th,td{padding:7px 6px;white-space:normal}}
+</style>
+</head>
+<body>
+<main>
+  <h1>Open Agent Memory Benchmark</h1>
+  <p class="sub">A reproducible, evidence-first benchmark for comparing self-hosted agent-memory systems through their native APIs.</p>
+
+  <div class="links">
+    <a href="eval_results/v0.1.0/comparison-20260913-133717-82378/report.html">
+      <b>v0.1.0 full report →</b>
+      <span>Paired statistical analysis across three providers</span>
+    </a>
+    <a href="eval_results/v0.1.0/">
+      <b>Raw evaluation snapshot →</b>
+      <span>180 provider-specific results, manifests, checksums</span>
+    </a>
+    <a href="https://github.com/krishj004/open-agent-memory-benchmark">
+      <b>Source &amp; method →</b>
+      <span>Repository, configuration, protocol</span>
+    </a>
+    <a href="https://github.com/krishj004/open-agent-memory-benchmark/blob/main/README.md">
+      <b>README →</b>
+      <span>Quick start and compatibility notes</span>
+    </a>
+  </div>
+
+  <h2>v0.1.0 results — LME-60 balanced screen</h2>
+  <p>Hindsight recorded the highest answer accuracy at <strong>57/60 (95.0%)</strong>, while Mem0 used the least answer-visible context: <strong>392.6k tokens</strong>, 59% less than Hindsight and 58% less than OpenViking.</p>
+
+  <table>
+    <thead>
+      <tr><th>Provider</th><th>Answer accuracy</th><th>Answer-visible context</th><th>Retrieval latency (median / p95)</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Hindsight</td><td><strong>57/60 (95.0%)</strong></td><td>954.4k total / 15.91k mean</td><td>0.17s / 0.33s</td></tr>
+      <tr><td>Mem0</td><td>52/60 (86.7%)</td><td><strong>392.6k total / 6.54k mean</strong></td><td>0.12s / 0.35s</td></tr>
+      <tr><td>OpenViking</td><td>51/60 (85.0%)</td><td>927.6k total / 15.46k mean</td><td>0.79s / 1.30s</td></tr>
+    </tbody>
+  </table>
+  <p class="note">Balanced 60-question screening comparison over a shared LongMemEval subset — not a complete 500-question reproduction or a universal provider ranking. Providers are pinned to immutable releases and source commits.</p>
+
+  <h2>Scope</h2>
+  <p>Questions, model roles, answer/judge policy, and comparison settings are fixed before execution. Providers keep their native storage and indexing behaviour. Retries, failures, partial ingestion, costs, and unavailable measurements stay visible, and there is no universal combined score. Retrieval permits query embedding but disables generative query rewriting, reflection, and reranking.</p>
+
+  <footer>
+    <span>MIT licensed</span>
+    <span><a href="https://github.com/krishj004">Krish Jain</a></span>
+    <span><a href="https://krishj004.github.io/Foresight/">Related: Foresight</a></span>
+  </footer>
+</main>
+</body>
+</html>
